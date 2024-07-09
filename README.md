@@ -15,7 +15,7 @@ Plots were made at various points to visualize the progress of fitting with resp
 
 However, this is a relatively arbitrary problem, since in real-world applications, data should be accumualated, shuffled, and split by the data scientist so as to prevent poor splits such as this.
 
-After making this simple change by accumulating the data with the bash script copy_move.sh, and then essentially repeating the entire process, a test accuracy of 98% was achieved, highlighting the effectiveness of this procedure. 
+After making this simple change by accumulating the data with the bash script copy_move.sh, and then essentially repeating the entire process, a test accuracy of 86% was achieved, and a very "textbook" training and testing error graph was created.
 
 The full project is available on main.ipynb and a shortened version with the main code is available on main.py.
 

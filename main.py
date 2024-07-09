@@ -5,98 +5,9 @@ import tensorflow as tf
 from tensorflow.keras import datasets, layers, models
 import os
 import keras_tuner as kt
+from sklearn.model_selection import train_test_split
 
 tf.random.set_seed(1)
-
-directory = "data/train"
-class_names = ["normal","adenocarcinoma_left.lower.lobe_T2_N0_M0_Ib","large.cell.carcinoma_left.hilum_T2_N2_M0_IIIa","squamous.cell.carcinoma_left.hilum_T1_N2_M0_IIIa"]
-class_labels = ["normal","adenocarcinoma","large cell carcinoma", "squamous cell carcinoma"]
-training_data = tf.keras.preprocessing.image_dataset_from_directory(directory = directory, labels = "inferred", class_names = class_names)
-test_labels = ["normal","adenocarcinoma","large.cell.carcinoma","squamous.cell.carcinoma"]
-testing_data = tf.keras.preprocessing.image_dataset_from_directory(directory = "data/test", labels = "inferred", class_names = test_labels)
-val_labels = ["normal","adenocarcinoma_left.lower.lobe_T2_N0_M0_Ib","large.cell.carcinoma_left.hilum_T2_N2_M0_IIIa","squamous.cell.carcinoma_left.hilum_T1_N2_M0_IIIa"]
-val_data = tf.keras.preprocessing.image_dataset_from_directory(directory = "data/valid", labels = "inferred", class_names = val_labels)
-
-normalize = tf.keras.Sequential([
-  layers.Rescaling(1./255,input_shape=(256, 256, 3)),
-])
-
-augmentation = tf.keras.Sequential([
-    layers.RandomRotation(0.1),
-    layers.RandomContrast(0.1),
-    layers.RandomCrop(240,240),
-    layers.RandomZoom((-0.1,0.1)),
-])
-
-model = models.Sequential([
-    tf.keras.Input(shape=(256,256,3),dtype="uint8"),
-])
-
-model.add(normalize)
-model.add(augmentation)
-
-model.add(layers.Conv2D(16,(3,3),activation="relu"))
-model.add(layers.MaxPooling2D((2,2)))
-
-model.add(layers.Conv2D(64,(3,3),activation="relu"))
-model.add(layers.MaxPooling2D((2,2)))
-
-model.add(layers.Conv2D(32,(3,3),activation="relu"))
-model.add(layers.MaxPooling2D((2,2)))
-
-model.add(layers.Flatten())
-model.add(layers.Dense(16, activation="relu"))
-
-model.add(layers.Dense(16,activation="relu"))
-model.add(layers.Dense(4))
-model.add(layers.Softmax())
-model.summary()
-
-model.compile(optimizer='adam',
-              loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False),
-              metrics=['accuracy'])
-
-
-checkpoint_path = "training_1/mod.weights.h5"
-checkpoint_dir = os.path.dirname(checkpoint_path)
-
-cp_callback = tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_path,monitor='val_loss',save_best_only=True,save_weights_only=True,verbose=1,mode = "min")
-
-epochs=10
-history = model.fit(
-  training_data,
-  validation_data=val_data,
-  epochs=epochs,
-  callbacks = [cp_callback]
-)
-
-acc = history.history['accuracy']
-val_acc = history.history['val_accuracy']
-
-loss = history.history['loss']
-val_loss = history.history['val_loss']
-
-epochs_range = range(epochs)
-
-plt.figure(figsize=(8, 8))
-plt.subplot(1, 2, 1)
-plt.plot(epochs_range, acc, label='Training Accuracy')
-plt.plot(epochs_range, val_acc, label='Validation Accuracy')
-plt.legend(loc='lower right')
-plt.title('Training and Validation Accuracy')
-
-plt.subplot(1, 2, 2)
-plt.plot(epochs_range, loss, label='Training Loss')
-plt.plot(epochs_range, val_loss, label='Validation Loss')
-plt.legend(loc='upper right')
-plt.title('Training and Validation Loss')
-plt.show()
-
-model.load_weights(checkpoint_path)
-
-# Re-evaluate the model
-loss, acc = model.evaluate(testing_data, verbose=2)
-print("Restored model, accuracy: {:5.2f}%".format(100 * acc))
 
 def hypertuned_mod_builder(hp):
     # create the model
@@ -149,38 +60,61 @@ def hypertuned_mod_builder(hp):
 
     return mod
 
-tuner = kt.Hyperband(hypertuned_mod_builder,
+
+directory = "data/all_data"
+all_data_labels = ["adenocarcinoma","large.cell.carcinoma","normal","squamous.cell.carcinoma"]
+all_data = tf.keras.preprocessing.image_dataset_from_directory(directory = directory, labels = "inferred", class_names = all_data_labels,batch_size=None, shuffle = True, seed = 1421)
+all_data.shuffle(buffer_size = 1000, seed = 8732)
+
+all_data_list = list(all_data.as_numpy_iterator())
+images,labels = zip(*all_data_list)
+images = np.stack(images)
+labels = np.stack(labels)
+
+train_images, temp_images, train_labels, temp_labels = train_test_split(images, labels, test_size=0.3, random_state=42)
+val_images, test_images, val_labels, test_labels = train_test_split(temp_images, temp_labels, test_size=0.5, random_state=42)
+
+def make_tf_dataset(images, labels):
+    dataset = tf.data.Dataset.from_tensor_slices((images, labels))
+    return dataset.batch(batch_size=32,drop_remainder=False)
+    
+training_resplit = make_tf_dataset(train_images, train_labels)
+validation_resplit = make_tf_dataset(val_images, val_labels)
+testing_resplit = make_tf_dataset(test_images, test_labels)
+
+# Optional: Shuffle the datasets
+training_resplit = training_resplit.shuffle(buffer_size=22, seed=34, reshuffle_each_iteration=True)
+validation_resplit = validation_resplit.shuffle(buffer_size=5, seed=432, reshuffle_each_iteration=True)
+testing_resplit = testing_resplit.shuffle(buffer_size=5, seed=53, reshuffle_each_iteration=True)
+
+tuner_resplit = kt.Hyperband(hypertuned_mod_builder, #define hyperband tuner
                      objective='val_accuracy',
-                     max_epochs=50, 
+                     max_epochs=50,
                      factor=4,
-                     directory='hyper_tuning',
+                     directory='hyper_tuning_resplit',
                      project_name='chest_cancer_proj')
 
-stop_early = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=3)
-tuner.search(training_data, validation_data=val_data, epochs=50, callbacks=[stop_early]) 
+stop_resplit = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=3) 
 
-# Get the optimal hyperparameters
-best_hps=tuner.get_best_hyperparameters(num_trials=1)[0]
+tuner_resplit.search(training_resplit, validation_data=validation_resplit, epochs=50, callbacks=[stop_resplit])
 
-print(best_hps)
-
-mod_best = tuner.hypermodel.build(best_hps)
+best_hps=tuner_resplit.get_best_hyperparameters(num_trials=1)[0]
+mod_best = tuner_resplit.hypermodel.build(best_hps)
 mod_best.compile(optimizer='adam',
               loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=False),
               metrics=['accuracy'])
-
-checkpoint_path = "training_1/mod_best.weights.h5"
+checkpoint_path = "training_1/mod_best_resplit.weights.h5"
 checkpoint_dir = os.path.dirname(checkpoint_path)
 cp_callback = tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_path,monitor='val_loss',save_best_only=True,save_weights_only=True,verbose=1,mode = "min")
+history_best = mod_best.fit(training_resplit,validation_data = validation_resplit, epochs=100,callbacks = [cp_callback])
 
-history_best = mod_best.fit(training_data,validation_data = val_data, epochs=100,callbacks = [cp_callback]) 
 acc = history_best.history['accuracy']
 val_acc = history_best.history['val_accuracy']
 
 loss = history_best.history['loss']
 val_loss = history_best.history['val_loss']
 
-epochs_range = range(100) 
+epochs_range = range(100)
 
 plt.figure(figsize=(8, 8))
 plt.subplot(1, 2, 1)
@@ -199,7 +133,7 @@ plt.show()
 mod_best.load_weights(checkpoint_path)
 
 # Re-evaluate the model
-loss, acc = mod_best.evaluate(testing_data, verbose=2)
+loss, acc = mod_best.evaluate(testing_resplit, verbose=2)
 print("Best model, testing accuracy: {:5.2f}%".format(100 * acc))
 
 
